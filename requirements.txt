@@ -1,0 +1,7 @@
+pdfplumber
+scikit-learn
+nltk
+numpy
+sentence-transformers
+flask 
+streamlit

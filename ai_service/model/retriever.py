@@ -1,98 +1,96 @@
-import logging
-from typing import List, Tuple
+import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import faiss
-from model.embeddings import EmbeddingManager
+from typing import List
+import pickle
+import os
+import logging
 
 logger = logging.getLogger(__name__)
 
-class SemanticRetriever:
-    """
-    Performs semantic search over NCERT content using FAISS
-    """
-    
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
-        self.embedding_manager = EmbeddingManager(model_name)
+class DocumentRetriever:
+    def __init__(self, index_path: str = None, embedding_model: str = 'all-MiniLM-L6-v2'):
+        self.embedding_model = SentenceTransformer(embedding_model)
         self.index = None
-        self.texts = None
-        self._load_index()
-    
-    def _load_index(self):
-        """Load the pre-built FAISS index and metadata"""
-        try:
-            self.index, self.texts = self.embedding_manager.load_index()
-            logger.info("FAISS index loaded successfully")
-        except FileNotFoundError as e:
-            logger.error(str(e))
-            self.index = None
-            self.texts = []
-    
-    def search(self, query: str, top_k: int = 5) -> List[Tuple[str, float]]:
-        """
-        Search for the most relevant text chunks for a given query
+        self.documents = []
         
-        Args:
-            query: User's question
-            top_k: Number of top results to return
+        if index_path:
+            self.load_index(index_path)
+    
+    def load_index(self, base_path: str):
+        """Load FAISS index and document metadata"""
+        try:
+            index_file = os.path.join(base_path, 'faiss_index.bin')
+            docs_file = os.path.join(base_path, 'documents.pkl')
             
-        Returns:
-            List of tuples (text_chunk, similarity_score)
-        """
-        if self.index is None or not self.texts:
-            logger.error("Index not loaded. Cannot perform search.")
+            if not os.path.exists(index_file) or not os.path.exists(docs_file):
+                raise FileNotFoundError(f"Index files not found at {base_path}")
+            
+            self.index = faiss.read_index(index_file)
+            
+            with open(docs_file, 'rb') as f:
+                data = pickle.load(f)
+                
+                # Handle both old and new formats
+                if isinstance(data, dict):
+                    self.documents = data.get('texts', [])
+                    self.metadata = data.get('metadata', [])
+                else:
+                    self.documents = data
+                    self.metadata = [{}] * len(data)
+            
+            logger.info(f"✅ Loaded index with {self.index.ntotal} vectors")
+            logger.info(f"✅ Loaded {len(self.documents)} documents")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load index: {e}")
+            raise
+    
+    def retrieve_context(self, query: str, top_k: int = 5) -> List[str]:
+        """Retrieve most relevant document chunks for a query"""
+        if self.index is None or len(self.documents) == 0:
+            logger.warning("⚠️ No index loaded!")
             return []
         
-        # Create query embedding
-        query_embedding = self.embedding_manager.model.encode([query], convert_to_numpy=True)
-        
-        # Normalize for cosine similarity
-        faiss.normalize_L2(query_embedding)
-        
-        # Search
-        scores, indices = self.index.search(query_embedding, top_k)
-        
-        # Prepare results
-        results = []
-        for idx, score in zip(indices[0], scores[0]):
-            if idx < len(self.texts):
-                results.append((self.texts[idx], float(score)))
-        
-        logger.info(f"Retrieved {len(results)} relevant chunks for query")
-        return results
-    
-    def get_context(self, query: str, top_k: int = 3) -> str:
-        """
-        Get concatenated context from top matching chunks
-        
-        Args:
-            query: User's question
-            top_k: Number of chunks to include
+        try:
+            # Encode query
+            query_embedding = self.embedding_model.encode([query], convert_to_numpy=True)
+            query_embedding = query_embedding.astype('float32')
             
-        Returns:
-            Concatenated context string
-        """
-        results = self.search(query, top_k)
-        
-        if not results:
-            return ""
-        
-        context_parts = []
-        for i, (text, score) in enumerate(results, 1):
-            context_parts.append(f"[Passage {i}] {text}")
-        
-        return "\n\n".join(context_parts)
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    
-    retriever = SemanticRetriever()
-    
-    # Test query
-    test_query = "What is photosynthesis?"
-    results = retriever.search(test_query, top_k=3)
-    
-    print(f"\nQuery: {test_query}\n")
-    for i, (text, score) in enumerate(results, 1):
-        print(f"Result {i} (score: {score:.4f}):")
-        print(f"{text[:200]}...\n")
+            # Search
+            distances, indices = self.index.search(query_embedding, min(top_k, len(self.documents)))
+            
+            logger.info(f"🔍 Query: {query[:50]}...")
+            logger.info(f"📊 Retrieved {len(indices[0])} documents")
+            logger.info(f"📏 Distances: {distances[0][:3]}")
+            
+            # Get documents
+            results = []
+            for idx, distance in zip(indices[0], distances[0]):
+                if idx < len(self.documents):
+                    doc = self.documents[idx]
+                    
+                    # Extract text
+                    if isinstance(doc, dict):
+                        text = doc.get('text', '') or doc.get('content', '') or str(doc)
+                    elif isinstance(doc, str):
+                        text = doc
+                    else:
+                        text = str(doc)
+                    
+                    if text and len(text.strip()) > 50:
+                        results.append(text)
+                        
+                        # Log with metadata if available
+                        source = self.metadata[idx].get('source', 'unknown') if idx < len(self.metadata) else 'unknown'
+                        logger.debug(f"  - Doc {idx} from {source}: {text[:100]}... (distance: {distance:.4f})")
+            
+            logger.info(f"✅ Successfully extracted {len(results)} text chunks")
+            if results:
+                logger.info(f"📄 First result (300 chars): {results[0][:300]}...")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ Retrieval error: {e}", exc_info=True)
+            return []

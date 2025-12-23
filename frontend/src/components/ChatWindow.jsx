@@ -1,18 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
-import MessageBubble from './MessageBubble';
-import { askQuestion } from '../api/chatApi';
+import { useState, useEffect, useRef } from 'react';
+import chatApi from '../api/chatApi';
 
 const ChatWindow = () => {
-  const [messages, setMessages] = useState([
-    {
-      id: 1,
-      text: "Hello! I'm StudyMate, your NCERT learning assistant. Ask me anything about Science, Maths, or English from classes 6-10!",
-      sender: 'bot',
-      timestamp: new Date()
-    }
-  ]);
-  const [input, setInput] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -23,105 +16,148 @@ const ChatWindow = () => {
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const handleSendMessage = async (e) => {
+    if (e) e.preventDefault();
+    
+    if (!inputMessage.trim()) return;
 
     const userMessage = {
-      id: messages.length + 1,
-      text: input,
+      id: Date.now(),
+      text: inputMessage,
       sender: 'user',
       timestamp: new Date()
     };
 
+    const currentMessage = inputMessage;
+    
     setMessages(prev => [...prev, userMessage]);
-    setInput('');
+    setInputMessage('');
     setIsLoading(true);
+    setError('');
 
     try {
-      const response = await askQuestion(input);
+      const response = await chatApi.sendMessage(currentMessage, messages);
+      console.log('Full response:', response);
       
+      let botText = 'No response';
+      
+      // Extract answer from different possible paths
+      if (response?.data?.response?.answer) {
+        botText = response.data.response.answer;
+      } else if (response?.data?.answer) {
+        botText = response.data.answer;
+      } else if (response?.answer) {
+        botText = response.answer;
+      } else if (response?.data?.response) {
+        botText = typeof response.data.response === 'string' 
+          ? response.data.response 
+          : JSON.stringify(response.data.response);
+      } else if (typeof response === 'string') {
+        botText = response;
+      } else {
+        botText = JSON.stringify(response);
+      }
+
       const botMessage = {
-        id: messages.length + 2,
-        text: response.answer,
+        id: Date.now() + 1,
+        text: botText,
         sender: 'bot',
         timestamp: new Date()
       };
 
       setMessages(prev => [...prev, botMessage]);
-    } catch (error) {
+      
+    } catch (err) {
+      console.error('Chat error:', err);
+      setError(err.message || 'Failed to send message');
+      
       const errorMessage = {
-        id: messages.length + 2,
-        text: error.message || 'Sorry, I encountered an error. Please make sure the backend service is running and try again.',
+        id: Date.now() + 1,
+        text: `Error: ${err.message || 'Something went wrong'}`,
         sender: 'bot',
-        isError: true,
-        timestamp: new Date()
+        timestamp: new Date(),
+        isError: true
       };
-
+      
       setMessages(prev => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
-    <div className="w-full max-w-4xl h-[600px] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
-      {/* Chat Header */}
-      <div className="bg-gradient-to-r from-indigo-600 to-purple-600 p-4 text-white">
+    <div className="bg-white rounded-lg shadow-lg h-[600px] flex flex-col">
+      {/* Header */}
+      <div className="bg-blue-600 text-white p-4 rounded-t-lg">
         <h2 className="text-xl font-semibold">Chat with StudyMate</h2>
-        <p className="text-sm opacity-90">AI-powered NCERT assistant</p>
       </div>
 
-      {/* Messages Container */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
-        {messages.map((message) => (
-          <MessageBubble key={message.id} message={message} />
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.length === 0 && (
+          <div className="text-center text-gray-500 mt-8">
+            <p>👋 Hi! Ask me anything about your NCERT textbooks!</p>
+            <p className="text-sm mt-2">Try: "What is photosynthesis?"</p>
+          </div>
+        )}
+        
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+          >
+            <div
+              className={`max-w-[70%] rounded-lg p-3 ${
+                msg.sender === 'user'
+                  ? 'bg-blue-600 text-white'
+                  : msg.isError
+                  ? 'bg-red-100 text-red-800'
+                  : 'bg-gray-200 text-gray-800'
+              }`}
+            >
+              <p className="whitespace-pre-wrap">{msg.text}</p>
+            </div>
+          </div>
         ))}
         
         {isLoading && (
-          <div className="flex items-center space-x-2 text-gray-500">
-            <div className="flex space-x-1">
-              <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-              <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-              <div className="w-2 h-2 bg-indigo-600 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+          <div className="flex justify-start">
+            <div className="bg-gray-200 rounded-lg p-3">
+              <p className="text-gray-600">Thinking...</p>
             </div>
-            <span className="text-sm">StudyMate is thinking...</span>
           </div>
         )}
         
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="border-t border-gray-200 p-4 bg-white">
-        <div className="flex items-end space-x-2">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="Ask a question about NCERT topics..."
-            className="flex-1 resize-none border border-gray-300 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-            rows="2"
+      {/* Error Display */}
+      {error && (
+        <div className="px-4 py-2 bg-red-50 border-t border-red-200">
+          <p className="text-red-600 text-sm">{error}</p>
+        </div>
+      )}
+
+      {/* Input */}
+      <form onSubmit={handleSendMessage} className="p-4 border-t">
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={inputMessage}
+            onChange={(e) => setInputMessage(e.target.value)}
+            placeholder="Type your question..."
+            className="flex-1 border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-600"
             disabled={isLoading}
           />
           <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed font-medium"
+            type="submit"
+            disabled={isLoading || !inputMessage.trim()}
+            className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
           >
-            {isLoading ? 'Sending...' : 'Send'}
+            Send
           </button>
         </div>
-        <p className="text-xs text-gray-500 mt-2">
-          Press Enter to send, Shift+Enter for new line
-        </p>
-      </div>
+      </form>
     </div>
   );
 };

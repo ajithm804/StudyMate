@@ -49,11 +49,11 @@ def main():
     
     # Build embeddings and index
     logger.info("Building embeddings and FAISS index...")
-    index, texts = manager.build_from_processed_texts(processed_dir=processed_dir)
+    index, texts, metadata = manager.build_from_processed_texts(processed_dir=processed_dir)
     
     # Save the index
     logger.info("Saving FAISS index and metadata...")
-    manager.save_index(index, texts)
+    manager.save_index(index, texts, metadata)
     
     logger.info("="*60)
     logger.info("Embedding Rebuild Complete!")

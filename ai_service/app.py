@@ -1,9 +1,12 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from model.response_engine import generate_answer
-import logging
+from fastapi.middleware.cors import CORSMiddleware
 import os
+import logging
+from dotenv import load_dotenv
+
+# Load environment variables FIRST
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -38,33 +41,55 @@ def health_check():
         "message": "StudyMate AI Service is running"
     }
 
+# Initialize response engine
+VECTOR_STORE_PATH = os.path.join(os.path.dirname(__file__), 'data', 'vector_store')
+
+try:
+    if not os.path.exists(os.path.join(VECTOR_STORE_PATH, 'faiss_index.bin')):
+        logger.warning("⚠️ Vector store not found! Run: python scripts/rebuild_embeddings.py")
+        response_engine = None
+    else:
+        from model.response_engine import ResponseEngine
+        
+        # Check if Gemini key exists
+        gemini_key = os.getenv('GEMINI_API_KEY')
+        has_gemini = bool(gemini_key and len(gemini_key.strip()) > 10)
+        
+        logger.info(f"🔑 Gemini API Key configured: {has_gemini}")
+        
+        response_engine = ResponseEngine(
+            vector_store_path=VECTOR_STORE_PATH,
+            use_gemini=True  # Always try to use Gemini if available
+        )
+        logger.info("✅ Response engine initialized")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize: {e}", exc_info=True)
+    response_engine = None
+
 @app.post("/ask")
-async def ask(query: Query):
-    """
-    Main endpoint for answering student questions
-    """
+async def ask_question(request: Query):
+    if response_engine is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI service is not ready. Please ensure PDFs are ingested and embeddings are built."
+        )
+    
     try:
-        if not query.question or len(query.question.strip()) == 0:
-            raise HTTPException(status_code=400, detail="Question cannot be empty")
+        question = request.question
+        logger.info(f"📨 Question received: {question}")
         
-        logger.info(f"Received question: {query.question[:100]}...")
+        # Get answer
+        answer = response_engine.get_answer(question)
         
-        # Generate answer using the AI pipeline
-        answer = generate_answer(query.question)
-        
-        if not answer:
-            raise HTTPException(status_code=500, detail="Failed to generate answer")
-        
-        logger.info("Answer generated successfully")
+        logger.info(f"✅ Answer sent")
         
         return {
             "answer": answer,
             "status": "success"
         }
-    
     except Exception as e:
-        logger.error(f"Error processing question: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
+        logger.error(f"❌ Error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

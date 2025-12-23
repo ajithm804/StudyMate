@@ -9,17 +9,21 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// Middleware - CORS must come first
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
-  credentials: true
+  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging
+// Request logging - add BEFORE routes
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log(`📍 ${new Date().toISOString()} - ${req.method} ${req.path}`);
+  console.log('Body:', req.body);
   next();
 });
 
@@ -32,7 +36,7 @@ if (process.env.MONGODB_URI) {
   console.log('⚠️  MongoDB URI not provided. Running without database.');
 }
 
-// Health check
+// Health check - BEFORE routes
 app.get('/health', (req, res) => {
   res.json({
     status: 'success',
@@ -41,8 +45,28 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Routes
+// Routes - Make sure this comes AFTER middleware
 app.use('/api/chat', chatRoutes);
+
+// Debug logging middleware
+app.use((req, res, next) => {
+  console.log(`📍 ${req.method} ${req.path}`);
+  next();
+});
+
+// Test all routes
+app.get('/api/test', (req, res) => {
+  res.json({
+    status: 'success',
+    message: 'API is working',
+    availableRoutes: [
+      'GET /health',
+      'GET /api/test',
+      'GET /api/chat/test',
+      'POST /api/chat/message'
+    ]
+  });
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -53,11 +77,18 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
+// 404 handler - should be LAST
 app.use((req, res) => {
+  console.log(`❌ 404 - Route not found: ${req.method} ${req.path}`);
   res.status(404).json({
     status: 'error',
-    message: 'Route not found'
+    message: `Route not found: ${req.method} ${req.path}`,
+    availableRoutes: [
+      'GET /health',
+      'GET /api/test', 
+      'GET /api/chat/test',
+      'POST /api/chat/message'
+    ]
   });
 });
 

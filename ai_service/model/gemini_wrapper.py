@@ -1,12 +1,30 @@
 # ai_service/gemini_wrapper.py
 import os
+import sys
 import logging
 from typing import Optional
 from dotenv import load_dotenv
 import importlib
+from pathlib import Path
+
+# Fix for packages installed in wrong venv location
+sys.path.insert(0, r'E:\StudyMate\.venv\Lib\site-packages')
 
 logger = logging.getLogger(__name__)
-load_dotenv()
+
+# Try multiple locations for .env file
+env_paths = [
+    Path(__file__).parent.parent / '.env',  # ai_service/.env
+    Path(__file__).parent.parent.parent / '.env',  # project root/.env
+]
+
+for env_path in env_paths:
+    if env_path.exists():
+        load_dotenv(dotenv_path=env_path)
+        logger.info(f"Loaded .env from: {env_path}")
+        break
+else:
+    logger.warning("No .env file found in expected locations")
 
 class GeminiWrapper:
     """
@@ -16,8 +34,14 @@ class GeminiWrapper:
     """
 
     def __init__(self):
-        self.model = None
+        self.client = None
         self.available = False
+
+        # Check if Gemini is enabled
+        use_gemini = os.getenv('USE_GEMINI', 'false').lower() == 'true'
+        if not use_gemini:
+            logger.info("USE_GEMINI is disabled. Gemini wrapper will not initialize.")
+            return
 
         api_key = os.getenv('GEMINI_API_KEY', '').strip()
         if not api_key:
@@ -25,66 +49,63 @@ class GeminiWrapper:
             return
 
         try:
-            # import at runtime so missing package doesn't break imports
-            genai = importlib.import_module('google.generativeai')
-            genai.configure(api_key=api_key)
-            # choose model; keep same name ('gemini-pro')
-            self.model = genai.GenerativeModel('gemini-pro')
+            # import new google.genai package - correct syntax
+            import google.genai as genai
+            self.client = genai.Client(api_key=api_key)
             self.available = True
-            logger.info("✅ Gemini API initialized successfully")
-        except ModuleNotFoundError:
-            logger.warning("google.generativeai package not installed. Gemini disabled.")
+            logger.info("✅ Gemini API initialized successfully with google.genai")
+        except (ModuleNotFoundError, ImportError) as e:
+            logger.warning(f"google.genai package not installed. Install with: pip install google-genai. Error: {e}")
         except Exception as e:
-            # catch other errors but do not raise to avoid import-time crashes
-            logger.error(f"Failed to initialize Gemini client: {e}")
+            logger.error(f"Failed to initialize Gemini client: {e}", exc_info=True)
 
     def generate_answer(self, question: str, context: str) -> str:
         """
         Generate answer with Gemini if available. Otherwise return a sensible fallback.
         """
-        if not self.available or self.model is None:
+        if not self.available or self.client is None:
             # fallback: return context trimmed and a short friendly reply
             trimmed = context.strip()
             if len(trimmed) > 800:
                 trimmed = trimmed[:800].rsplit('.', 1)[0] + '.'
-            reply = (
-                f"{trimmed}\n\n"
-                # "Note: Gemini is not configured, so this is the raw extracted NCERT content "
-                # "from which you can read the exact explanation. If you want a friendlier summary, "
-                # "add a GEMINI_API_KEY to your .env file."
-            )
-            return reply
+            return trimmed
 
-        # Build prompt (kept concise & friendly)
-        prompt = f"""
-You are StudyMate, a warm and patient teacher for school students (Classes 6–10).
+        # Build prompt for detailed, educational answers
+        prompt = f"""You are a helpful NCERT tutor for Class 6-10 students.
 
-Reference NCERT content:
+Reference material:
 {context[:3000]}
 
-Student question:
-{question}
+Student question: {question}
 
-Instructions:
-1) Use ONLY the NCERT content above.
-2) Answer clearly in 3-6 short sentences. Start with a short definition/explanation then one helpful detail or example.
-3) Use simple language appropriate for 10-15 year olds.
-4) If not found, reply: "I couldn't find that in the NCERT section I have."
-5) Do not say you used the context or mention you are an AI.
+Instructions: Write a detailed, complete explanation (at least 5-6 sentences) using the reference material. Explain clearly with examples. Use simple language suitable for school students.
 
-Answer:
-"""
+Your detailed answer:"""
+
         try:
-            response = self.model.generate_content(
-                prompt,
-                generation_config={
-                    'temperature': 0.35,
-                    'top_p': 0.8,
-                    'top_k': 40,
-                    'max_output_tokens': 300
+            response = self.client.models.generate_content(
+                model='models/gemini-2.5-flash',
+                contents=prompt,
+                config={
+                    'temperature': 0.7,
+                    'top_p': 0.95,
+                    'max_output_tokens': 1024,  # Increased to allow complete answers
                 }
             )
-            return response.text.strip()
+            
+            # Get the full text from response
+            answer = ""
+            
+            if hasattr(response, 'text') and response.text:
+                answer = response.text.strip()
+            elif hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'content') and candidate.content:
+                    if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                        answer = ''.join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
+            
+            return answer if answer else context[:800]
+            
         except Exception as e:
             logger.error(f"Gemini API call failed: {e}", exc_info=True)
             # safe fallback: trimmed context
